@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Particle Repulsion System</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            body {
+                overflow: hidden;
+                background: linear-gradient(135deg, #0a0a0a, #1a1a2e, #16213e);
+                font-family: "Arial", sans-serif;
+            }
+
+            #canvas {
+                display: block;
+                cursor: none;
+            }
+
+            .info {
+                position: absolute;
+                bottom: 20px;
+                left: 20px;
+                color: rgba(255, 255, 255, 0.6);
+                font-size: 14px;
+                pointer-events: none;
+                text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+            }
+
+            .cursor {
+                position: absolute;
+                width: 30px;
+                height: 30px;
+                border: 2px solid rgba(255, 255, 255, 0.8);
+                border-radius: 50%;
+                pointer-events: none;
+                transform: translate(-50%, -50%);
+                box-shadow: 0 0 20px rgba(255, 255, 255, 0.5);
+                transition: all 0.1s ease;
+            }
+
+            .cursor::before {
+                content: "";
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                width: 6px;
+                height: 6px;
+                background: white;
+                border-radius: 50%;
+                transform: translate(-50%, -50%);
+            }
+        </style>
+    </head>
+    <body>
+        <canvas id="canvas"></canvas>
+        <div class="cursor"></div>
+        <div class="info"><3</div>
+
+        <script>
+            const canvas = document.getElementById("canvas");
+            const ctx = canvas.getContext("2d");
+            const cursor = document.querySelector(".cursor");
+
+            // Hoisted constants for performance
+            const CONNECTION_THRESHOLD = 150;
+            const CONNECTION_THRESHOLD_SQ =
+                CONNECTION_THRESHOLD * CONNECTION_THRESHOLD;
+            const CONNECTION_OPACITY_SCALE = 0.2;
+            const BACKGROUND_FILL = "rgba(10, 10, 10, 0.1)";
+            const NEIGHBOR_OFFSETS = [
+                [-1, -1],
+                [0, -1],
+                [1, -1],
+                [-1, 0],
+                [0, 0],
+                [1, 0],
+                [-1, 1],
+                [0, 1],
+                [1, 1],
+            ];
+
+            // Reusable spatial grid map: cellKey -> number[] (particle indices)
+            const grid = new Map();
+
+            // Set canvas size
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            }
+            resizeCanvas();
+            window.addEventListener("resize", resizeCanvas);
+
+            // Mouse tracking
+            const mouse = {
+                x: canvas.width / 2,
+                y: canvas.height / 2,
+                radius: 100,
+                realX: canvas.width / 2,
+                realY: canvas.height / 2,
+            };
+
+            // Smooth mouse tracking
+            function updateMousePosition(e) {
+                mouse.realX = e.clientX;
+                mouse.realY = e.clientY;
+            }
+
+            // Smooth interpolation for mouse position
+            function smoothMouse() {
+                mouse.x += (mouse.realX - mouse.x) * 0.1;
+                mouse.y += (mouse.realY - mouse.y) * 0.1;
+            }
+
+            canvas.addEventListener("mousemove", updateMousePosition);
+            // Throttle cursor DOM updates with rAF to avoid layout thrash on rapid mousemove
+            let cursorPending = false;
+            let lastMouseEvent = null;
+            window.addEventListener("mousemove", (e) => {
+                lastMouseEvent = e;
+                if (!cursorPending) {
+                    cursorPending = true;
+                    requestAnimationFrame(() => {
+                        if (lastMouseEvent) {
+                            cursor.style.left = lastMouseEvent.clientX + "px";
+                            cursor.style.top = lastMouseEvent.clientY + "px";
+                        }
+                        cursorPending = false;
+                    });
+                }
+            });
+
+            // Particle class
+            class Particle {
+                constructor() {
+                    this.x = Math.random() * canvas.width;
+                    this.y = Math.random() * canvas.height;
+                    this.size = Math.random() * 3 + 1;
+                    this.baseSize = this.size;
+                    this.speedX = (Math.random() - 0.5) * 0.5;
+                    this.speedY = (Math.random() - 0.5) * 0.5;
+                    this.color = `hsl(${Math.random() * 60 + 180}, 70%, 50%)`;
+                    this.originalColor = this.color;
+                    this.glow = 0;
+                    this.angle = Math.random() * Math.PI * 2;
+                    this.rotationSpeed = (Math.random() - 0.5) * 0.02;
+                }
+
+                update(w, h) {
+                    // Update angle for rotation effect
+                    this.angle += this.rotationSpeed;
+
+                    // Apply mouse repulsion
+                    const dx = this.x - mouse.x;
+                    const dy = this.y - mouse.y;
+                    const distance = Math.hypot(dx, dy);
+
+                    if (distance < mouse.radius) {
+                        const force = (mouse.radius - distance) / mouse.radius;
+                        const angle = Math.atan2(dy, dx);
+                        const forceX = Math.cos(angle) * force * 5;
+                        const forceY = Math.sin(angle) * force * 5;
+
+                        this.speedX += forceX;
+                        this.speedY += forceY;
+                        this.glow = Math.min(this.glow + 0.1, 1);
+                    } else {
+                        this.glow = Math.max(this.glow - 0.05, 0);
+                    }
+
+                    // Apply velocity with damping
+                    this.x += this.speedX;
+                    this.y += this.speedY;
+
+                    // Damping
+                    this.speedX *= 0.98;
+                    this.speedY *= 0.98;
+
+                    // Bounce off walls (use cached w/h)
+                    if (this.x < 0 || this.x > w) {
+                        this.speedX *= -0.8;
+                        this.x = Math.max(0, Math.min(w, this.x));
+                    }
+                    if (this.y < 0 || this.y > h) {
+                        this.speedY *= -0.8;
+                        this.y = Math.max(0, Math.min(h, this.y));
+                    }
+
+                    // Update size based on speed
+                    const speed = Math.hypot(this.speedX, this.speedY);
+                    this.size = this.baseSize + speed * 0.5;
+
+                    // Update color based on state
+                    const hue = 180 + speed * 50 + this.glow * 20;
+                    this.color = `hsl(${hue}, 70%, ${50 + this.glow * 20}%)`;
+                }
+
+                draw() {
+                    ctx.save();
+
+                    // Draw glow
+                    if (this.glow > 0) {
+                        ctx.shadowBlur = 20 * this.glow;
+                        ctx.shadowColor = this.color;
+                    }
+
+                    // Draw particle with gradient
+                    const gradient = ctx.createRadialGradient(
+                        this.x,
+                        this.y,
+                        0,
+                        this.x,
+                        this.y,
+                        this.size * 2,
+                    );
+                    gradient.addColorStop(0, this.color);
+                    gradient.addColorStop(
+                        0.5,
+                        this.color.replace("50%", "30%"),
+                    );
+                    gradient.addColorStop(1, "transparent");
+
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size * 2, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Draw core
+                    ctx.fillStyle = "#ffffff";
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.restore();
+                }
+            }
+
+            // Create particles
+            const particles = [];
+            const particleCount = 150;
+
+            for (let i = 0; i < particleCount; i++) {
+                particles.push(new Particle());
+            }
+
+            // Connection drawing optimized with a spatial grid (uniform hashing)
+            function drawConnections() {
+                const threshold = CONNECTION_THRESHOLD;
+                const thresholdSq = CONNECTION_THRESHOLD_SQ;
+                const cellSize = threshold;
+                ctx.lineWidth = 1;
+
+                // Reset or create buckets for this frame
+                // We'll track which keys we touched to reset them next frame if needed
+                // Build grid of particle indices per cell
+                for (let i = 0; i < particles.length; i++) {
+                    const p = particles[i];
+                    const cx = Math.floor(p.x / cellSize);
+                    const cy = Math.floor(p.y / cellSize);
+                    const key = cx + "," + cy;
+                    let bucket = grid.get(key);
+                    if (!bucket) {
+                        bucket = [];
+                        grid.set(key, bucket);
+                    } else {
+                        // no-op; we append per-frame (buckets from other keys are untouched)
+                    }
+                    bucket.push(i);
+                }
+
+                let lastStrokeStyle = null;
+
+                // For each particle, only check neighbors in relevant cells with j>i
+                for (let i = 0; i < particles.length; i++) {
+                    const pi = particles[i];
+                    const cx = Math.floor(pi.x / cellSize);
+                    const cy = Math.floor(pi.y / cellSize);
+
+                    for (let n = 0; n < NEIGHBOR_OFFSETS.length; n++) {
+                        const ncx = cx + NEIGHBOR_OFFSETS[n][0];
+                        const ncy = cy + NEIGHBOR_OFFSETS[n][1];
+                        const key = ncx + "," + ncy;
+                        const bucket = grid.get(key);
+                        if (!bucket) continue;
+
+                        for (let b = 0; b < bucket.length; b++) {
+                            const j = bucket[b];
+                            if (j <= i) continue; // avoid duplicate pairs
+                            const pj = particles[j];
+
+                            const dx = pi.x - pj.x;
+                            const dy = pi.y - pj.y;
+                            const d2 = dx * dx + dy * dy;
+                            if (d2 >= thresholdSq) continue; // early prune
+
+                            const distance = Math.hypot(dx, dy);
+                            const opacity = 1 - distance / threshold;
+                            const style = `rgba(100, 200, 255, ${opacity * CONNECTION_OPACITY_SCALE})`;
+                            if (style !== lastStrokeStyle) {
+                                ctx.strokeStyle = style;
+                                lastStrokeStyle = style;
+                            }
+
+                            ctx.beginPath();
+                            ctx.moveTo(pi.x, pi.y);
+                            ctx.lineTo(pj.x, pj.y);
+                            ctx.stroke();
+                        }
+                    }
+                }
+
+                // Clear buckets for next frame reuse (reset lengths)
+                for (const bucket of grid.values()) {
+                    bucket.length = 0;
+                }
+            }
+
+            // Mouse trail particles
+            class TrailParticle {
+                constructor(x, y) {
+                    this.x = x;
+                    this.y = y;
+                    this.size = Math.random() * 2 + 0.5;
+                    this.speedX = (Math.random() - 0.5) * 2;
+                    this.speedY = (Math.random() - 0.5) * 2;
+                    this.life = 1;
+                    this.decay = Math.random() * 0.02 + 0.01;
+                }
+
+                update() {
+                    this.x += this.speedX;
+                    this.y += this.speedY;
+                    this.life -= this.decay;
+                    this.speedX *= 0.95;
+                    this.speedY *= 0.95;
+                }
+
+                draw() {
+                    ctx.save();
+                    ctx.globalAlpha = this.life;
+                    ctx.fillStyle = "#64c8ff";
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.restore();
+                }
+            }
+
+            const trailParticles = [];
+
+            // Animation loop
+            function animate() {
+                // Cache canvas width/height for this frame
+                const w = canvas.width;
+                const h = canvas.height;
+
+                // Clear canvas with fade effect
+                ctx.fillStyle = BACKGROUND_FILL;
+                ctx.fillRect(0, 0, w, h);
+
+                // Smooth mouse
+                smoothMouse();
+
+                // Add trail particles
+                if (Math.random() < 0.3) {
+                    trailParticles.push(new TrailParticle(mouse.x, mouse.y));
+                }
+
+                // Update and draw trail particles
+                for (let i = trailParticles.length - 1; i >= 0; i--) {
+                    const particle = trailParticles[i];
+                    particle.update();
+                    particle.draw();
+
+                    if (particle.life <= 0) {
+                        trailParticles.splice(i, 1);
+                    }
+                }
+
+                // Draw connections
+                drawConnections();
+
+                // Update and draw particles
+                particles.forEach((particle) => {
+                    particle.update(w, h);
+                    particle.draw();
+                });
+
+                requestAnimationFrame(animate);
+            }
+
+            // Start animation
+            animate();
+        </script>
+    </body>
+</html>
