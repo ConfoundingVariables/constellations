@@ -20,6 +20,7 @@
             #canvas {
                 display: block;
                 cursor: none;
+                touch-action: none;
             }
 
             .info {
@@ -60,7 +61,9 @@
     <body>
         <canvas id="canvas"></canvas>
         <div class="cursor"></div>
-        <div class="info"><3</div>
+        <div class="info">
+            Move your mouse to repel particles • Particles connect when close
+        </div>
 
         <script>
             const canvas = document.getElementById("canvas");
@@ -117,23 +120,73 @@
                 mouse.y += (mouse.realY - mouse.y) * 0.1;
             }
 
-            canvas.addEventListener("mousemove", updateMousePosition);
+            canvas.addEventListener("mousemove", updateMousePosition, {
+                passive: true,
+            });
             // Throttle cursor DOM updates with rAF to avoid layout thrash on rapid mousemove
             let cursorPending = false;
             let lastMouseEvent = null;
-            window.addEventListener("mousemove", (e) => {
-                lastMouseEvent = e;
-                if (!cursorPending) {
-                    cursorPending = true;
-                    requestAnimationFrame(() => {
-                        if (lastMouseEvent) {
-                            cursor.style.left = lastMouseEvent.clientX + "px";
-                            cursor.style.top = lastMouseEvent.clientY + "px";
-                        }
-                        cursorPending = false;
-                    });
-                }
-            });
+            window.addEventListener(
+                "mousemove",
+                (e) => {
+                    lastMouseEvent = e;
+                    cursor.style.display = "block";
+                    if (!cursorPending) {
+                        cursorPending = true;
+                        requestAnimationFrame(() => {
+                            if (lastMouseEvent) {
+                                cursor.style.left =
+                                    lastMouseEvent.clientX + "px";
+                                cursor.style.top =
+                                    lastMouseEvent.clientY + "px";
+                            }
+                            cursorPending = false;
+                        });
+                    }
+                },
+                { passive: true },
+            );
+
+            // Touch input support: map primary touch to mouse.realX/realY and manage cursor visibility
+            let isTouchActive = false;
+            function updateTouchPosition(touch) {
+                mouse.realX = touch.clientX;
+                mouse.realY = touch.clientY;
+            }
+            canvas.addEventListener(
+                "touchstart",
+                (e) => {
+                    if (e.touches && e.touches.length > 0) {
+                        isTouchActive = true;
+                        cursor.style.display = "none";
+                        updateTouchPosition(e.touches[0]);
+                        updateMousePosition(e.touches[0]);
+                    }
+                    e.preventDefault();
+                },
+                { passive: false },
+            );
+            canvas.addEventListener(
+                "touchmove",
+                (e) => {
+                    if (e.touches && e.touches.length > 0) {
+                        updateTouchPosition(e.touches[0]);
+                    }
+                    e.preventDefault();
+                },
+                { passive: false },
+            );
+            canvas.addEventListener(
+                "touchend",
+                (e) => {
+                    if (!e.touches || e.touches.length === 0) {
+                        isTouchActive = false;
+                        // Do not force-show cursor; desktop mousemove will reveal it again
+                    }
+                    e.preventDefault();
+                },
+                { passive: false },
+            );
 
             // Particle class
             class Particle {
